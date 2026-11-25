@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include "../include/signal_manager.h"
 #include "../include/process_manager.h"
+#include "../include/logger.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,8 +10,10 @@
 
 static void perform_graceful_shutdown(void) {
     printf("\n[SHUTDOWN] Graceful shutdown baslatildi. Yeni surec baslatma durduruldu.\n");
+    logger_write("SHUTDOWN", "Graceful shutdown started. No new processes will be launched.");
     shutdown_all_children(DEFAULT_SHUTDOWN_TIMEOUT_SEC);
     printf("[SHUTDOWN] Tum kaynaklar temizlendi. Watchdog kapaniyor.\n");
+    logger_write("SHUTDOWN", "Shutdown complete. Watchdog exiting.");
 }
 
 int main(void) {
@@ -19,6 +22,7 @@ int main(void) {
     }
 
     printf("[START] Watchdog baslatildi (PID: %d)\n", getpid());
+    logger_write("START", "Watchdog started (PID: %d)", (int)getpid());
     printf("Test etmek icin Ctrl+C yapabilir veya baska terminalden 'kill -SIGUSR1 %d' gonderebilirsiniz.\n", getpid());
 
     if (init_process_manager("./worker") != 0) {
@@ -68,7 +72,16 @@ int main(void) {
         }
 
         if (usr1_event) {
-            printf("[EVENT] SIGUSR1 alindi -> 3. Ogrenci modulu (durum raporu) tetiklenecek.\n");
+            const ChildProcess *children = get_child_processes();
+            int child_count = get_child_count();
+
+            logger_write("STATUS", "Received SIGUSR1 (child_count=%d)", child_count);
+            for (int i = 0; i < child_count; i++) {
+                const ChildProcess *child = &children[i];
+                logger_write("STATUS", "name=%s pid=%d state=%s restart_count=%d",
+                             child->name, (int)child->pid,
+                             process_state_to_string(child->state), child->restart_count);
+            }
         }
 
         if (alarm_event) {

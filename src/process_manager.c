@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include "../include/process_manager.h"
+#include "../include/logger.h"
 
 #include <errno.h>
 #include <signal.h>
@@ -40,6 +41,8 @@ static void attempt_restart(int index) {
         child->restart_count++;
         printf("[RESTART] '%s' beklenmedik sekilde sonlandi. Yeniden baslatiliyor (%d/%d)...\n",
                child->name, child->restart_count, MAX_RESTARTS);
+        logger_write("RESTART", "'%s' exited unexpectedly. Restarting (%d/%d).",
+               child->name, child->restart_count, MAX_RESTARTS);
         if (start_child_process(index) != 0) {
             child->state = PROC_FAILED;
             fprintf(stderr, "[ERROR] '%s' yeniden baslatilamadi.\n", child->name);
@@ -47,6 +50,8 @@ static void attempt_restart(int index) {
     } else {
         child->state = PROC_FAILED;
         printf("[LIMIT] '%s' icin maksimum yeniden baslatma limitine (%d) ulasildi. Yeniden baslatilmayacak.\n",
+               child->name, MAX_RESTARTS);
+        logger_write("LIMIT", "'%s' reached the restart limit (%d). No further restarts.",
                child->name, MAX_RESTARTS);
     }
 }
@@ -135,6 +140,8 @@ int start_child_process(int index) {
 
     printf("[PROCESS] '%s' baslatildi (PID: %d, mode: %s)\n",
            child->name, (int)child->pid, child->mode);
+    logger_write("PROCESS", "'%s' started (PID: %d, mode: %s)",
+           child->name, (int)child->pid, child->mode);
 
     return 0;
 }
@@ -172,9 +179,13 @@ void handle_terminated_children(int allow_restart) {
                     child->state = PROC_EXITED_NORMAL;
                     printf("[EXIT] '%s' (PID: %d) normal sekilde sonlandi (exit code: 0).\n",
                            child->name, (int)pid);
+                    logger_write("EXIT", "'%s' (PID: %d) exited normally (exit code: 0).",
+                           child->name, (int)pid);
                 } else {
                     child->state = PROC_EXITED_ERROR;
                     printf("[EXIT] '%s' (PID: %d) hata kodu ile sonlandi (exit code: %d).\n",
+                           child->name, (int)pid, exit_code);
+                    logger_write("EXIT", "'%s' (PID: %d) exited with an error (exit code: %d).",
                            child->name, (int)pid, exit_code);
                     if (allow_restart) {
                         attempt_restart(idx);
@@ -187,6 +198,8 @@ void handle_terminated_children(int allow_restart) {
                 child->state = PROC_EXITED_ERROR;
 
                 printf("[EXIT] '%s' (PID: %d) sinyal ile sonlandi (signal: %d).\n",
+                       child->name, (int)pid, term_sig);
+                logger_write("EXIT", "'%s' (PID: %d) was terminated by a signal (signal: %d).",
                        child->name, (int)pid, term_sig);
                 if (allow_restart) {
                     attempt_restart(idx);
@@ -277,6 +290,8 @@ void shutdown_all_children(int timeout_sec) {
         if (child->state == PROC_RUNNING && child->pid > 0) {
             printf("[SHUTDOWN] '%s' (PID: %d) surecine SIGTERM gonderiliyor...\n",
                    child->name, (int)child->pid);
+            logger_write("SHUTDOWN", "Sending SIGTERM to '%s' (PID: %d).",
+                   child->name, (int)child->pid);
             if (kill(child->pid, SIGTERM) == -1 && errno != ESRCH) {
                 perror("kill(SIGTERM)");
             }
@@ -311,16 +326,26 @@ void shutdown_all_children(int timeout_sec) {
             pid_t pid = child->pid;
             printf("[SHUTDOWN] '%s' (PID: %d) zaman asimina ugradi, SIGKILL gonderiliyor...\n",
                    child->name, (int)pid);
+            logger_write("SHUTDOWN", "'%s' (PID: %d) exceeded the shutdown timeout. Sending SIGKILL.",
+                   child->name, (int)pid);
             if (kill(pid, SIGKILL) == -1 && errno != ESRCH) {
                 perror("kill(SIGKILL)");
             }
 
             int status = 0;
-            while (waitpid(pid, &status, 0) == -1) {
-                if (errno == EINTR) {
-                    continue;
+            pid_t reaped;
+            do {
+                reaped = waitpid(pid, &status, 0);
+            } while (reaped == -1 && errno == EINTR);
+
+            if (reaped == pid) {
+                if (WIFSIGNALED(status)) {
+                    logger_write("EXIT", "'%s' (PID: %d) was terminated by a signal (signal: %d).",
+                                 child->name, (int)pid, WTERMSIG(status));
+                } else if (WIFEXITED(status)) {
+                    logger_write("EXIT", "'%s' (PID: %d) exited (exit code: %d).",
+                                 child->name, (int)pid, WEXITSTATUS(status));
                 }
-                break;
             }
             child->pid = -1;
             child->state = PROC_STOPPED;
